@@ -1,0 +1,131 @@
+## How Well Are You Doing Exercise?
+**Constructing a Model to guide you through a Qualified Weight Lifting exercise**
+
+*Author - Kewen Chen  Sep/10/2014*
+
+*R version 3.0.2 (2013-09-25) Platform: x86_64-pc-linux-gnu (64-bit)*
+
+### Abstract
+
+In this digital era, it is generally accepted that people have begun to use digital wearable devices to individually monitor self movements, especially those closely related to body health, such as heart rate, calory consumption during the physical exercises, trying to find patterns in order to improve personal health. But a phenomenon most people would be ignoring is that **How Well You Are Doing** those exercises, in general, people only care about *how much* an activity they usually do, they don't care or totally have no sense *how well* they are doing this kind of activities, in fact, the quality of an activity or exercise is highly essential to achieve the health improvement, disqualified exercise may even harm the personal health. This report is essentially commissioned to find out a model by means of practical machine learning technique based on the experimental signal data collected from the sensors fixed on different parts of the body of 6 participants, each of the participants performed arm dumbbell lifting in 5 different behaviours, the practical model we will be exploring is to classify each of these behaviours distinctly with acceptable low error rate, the methodologies include exploratory data analysis, model feature selection, data preprocessing and practical machine learning model selection, the promissing result we acquired is a positive sign of success for this kind of experiments.
+
+##  1 Introduction
+
+We will be using the data provided by Groupware[1], the data was collected by the experiment in which 6 participants (all males, aged between 20-28) were asked to perform one set of 10 repetitions of the Unilateral Dumbbell Biceps Curl in five different fashions (behaviours): exactly according to the specification (Class A), throwing elbows to the front (Class B), lifting the dumbbell only halfway (Class C), lowering the dumbbell only halfway (Class D) and throwing the hips to the front (Class E), only A fashion was following the standard, the others correspond to common mistakes. To measure these, on-body sensors were put on four different parts of each individual participant, through performing the aforementioned activies under instructions, signal data were caught using sliding window approach with different lengths from 0.5 second to 2.5 seconds with 0.5 second overlap, and features were calculated on the Euler angles, raw accelerometer, gyroscope and magnetometer readings. By downloading the training and testing data sets from below links, we found out that there are 160 features in each data set, start from this point we try to consturct our practical machine learning model to get the classification job done.
+
+*Training set:* https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv
+
+*Testing set:*  https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv
+
+##  2 Methodology
+
+### 2.1 Exploratory Data Analysis
+
+Let's download the data sets first:
+```{r, cache=TRUE}
+setwd("/home/mc/R wd")
+# Download the data file and read the data into R:
+if (!file.exists("./data/pml-training.csv")) {
+    download.file("https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv", 
+                    destfile = "./data/pml-training.csv", quiet = T, 
+                    method = "curl")
+}
+if (!file.exists("./data/pml-testing.csv")) {
+    download.file("https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv", 
+                    destfile = "./data/pml-testing.csv", quiet = T,
+                    method = "curl")
+}
+training <- read.csv("./data/pml-training.csv")
+testing <- read.csv("./data/pml-testing.csv")
+```
+By using function **summary(training)**, we get a summary of all variables of this data set (Figure 1.0 in Appendix), to look at the data and get a full knowlege of the data is imperative to data exploration even though the number of variables is big. Through observing this data set, we found out that a bunch of variables holding extremely sparse information comparing to the total lines of the data, such as variables 'kurtosis_roll_belt', 'kurtosis_picth_belt', 'kurtosis_yaw_belt', etc. We observed that in all of these variables, 19216 records are blank plus hundreds of unclear values (Other), approximately 99.9% lines are holding invalid values, very very skewed data. Let's separate them out via the following code:
+```{r}
+kickoutCol <- sapply(training, function(x) {sum(is.na(x)) == 19216 || sum(x == "")})
+# Separate the class (target) variable
+class <- training$classe
+```
+Totally `r length(kickoutCol[kickoutCol == T])` columns don't have much valid information, let's plot one of them versus variable class to see if any observable correlation exists:
+```{r}
+oneKickout <- names(kickoutCol[kickoutCol == T])[10]  # select the 10th to be plotted.
+plot(training[, oneKickout] ~ class, ylab = oneKickout)
+```
+
+Unfortunately we don't see any correlation exists, let's just tentatively take out all these variables from the data set to see if we can fit a reasonable model using rest of the variables.
+
+Keep observing the data set (Figure 1.0), it is not hard to find out that variable X is just holding line sequential numbers, "user_name" for participants names, the third through seventh variables are all related to signal filtering time frames, therefore these 7 variables won't have any effect on the class classification, plus the last variable records the classes, let's take them out as well:
+```{r}
+kickoutCol[c(1 : 7, length(kickoutCol))] <- T   # first 7 and the last one will be kicked out.
+subTrain <- training[, !kickoutCol]
+```
+
+For a central problem in machine learning is identifying a representative set of features from which to  construct a classification model for a particular task. In this report, we will try correlation-based feature selection method in package "FSelector" to filter *subTrain* data set again to get the most fluential features contributed to the classification task, the principle is that any irrelevant and redundant features will be taken out, only the features which have no inter-correlations but correlations with class variable will be persisted[2], besides, reduced data dimensionality will dramatically speed up the model fitting process. Let's do this via the following code:
+```{r}
+library(FSelector)
+fSel <- cfs(class ~ ., subTrain)
+subTrain <- training[, fSel]
+```
+Have a view of *subTrain* data set via *summary(subTrain)* (Figure 2.0), each variable is numeric with no missing data, the value scale of each variable is different, thus we will consider normalizing data in the pre-processing step in constructing the model. 
+
+### 2.2 Modeling
+
+By checking the class distribution, we acknowledged that the data were kind of symmetrically allotted between 5 classes, maybe 'A' class is holding more rows, but none of them is holding too few or too many, which will make it easier to fit the classification model.
+```{r}
+table(class)
+```
+
+Among all the decision tree machine learning methods, I decided to choose random forest, because it possesses substantial variance reduction ability and by inherent CV method, the testing accuracy will be much higher, no worry of overfitting on the training set. To fit this model, just one tunning parameter (mtry) which is the number of variables randomly picked as candidates at each split needs some care, different choice of this parameter may result in different accuracy rate, thus we use 10-fold CV to decide the value of this parameter during the model training. Let's do this:
+```{r, cache=TRUE}
+library(caret)
+set.seed(1002)
+rfMod <- train(class ~ ., method = "rf", preProcess = c("center", "scale"),   # data normalizing
+               data = subTrain, trControl = trainControl(method = "cv",number = 10))
+```
+Pull out the detail of this model by calling *rfMod$finalModel* (Figure 3.0), we found out that the number of trees in this random forest is 500, the tunning parameter *mtry* was chosen as 2 given the best accuracy rate which is 0.987, out-of-bag (oob) error rate is 1.04% which has the same meaning as the term out-of-sample error rate being used in other models, either the accuracy rate or oob rate is pretty promissing, almost perfect! Let's have another view over the model plot (Figure 4.0), we see that when the model started building trees, the error rate almost dropped perpendicularly, after around 50 trees, the sliding became very slow, almost balanced, actually if you set the number of trees to grow at 100, the result is still very promissing.
+
+##  3 Model Testing 
+
+To judge if a fitted model is right, we have to go through the testing procedure, that's the reason why the testing data set was separated out at the beginning and never touched until the right model was found and needed the final test. Here in the *testing* data set, we got 20 lines of data without showing the corresponding classs, what we need to do is using the fitted model to predict the classs for those data lines, and submit the result to the programmed system to be graded automatically. Before predicting, the testing data set must go through the dimensional reduction as same as the training set. The code is shown as below:
+```{r, cache=TRUE}
+subTest <- testing[, fSel]
+pred <- predict(rfMod, subTest)
+```
+
+##  4 Conclusion
+
+The predicted results for those 20 lines in the testing set are all correct, together with the high accuracy rate and extremely low oob rate, we have enough evidence to present this model as the one to handle the job -  distinctly recognising each of the five different fashions of Unilateral Dumbbell Biceps Curl. At the beginning of the model construction, we tentatively took off 100 variables which have extremely sparse valid information, 'til this moment we could decisively say that this action was right. The further data set dimensional reduction using *cfs()* function was to speed up the model fitting process, probably will also make the model more accurate, of course you can try fitting the random forest model without applying this function beforehand, and compare if any change in terms of the accuracy or oob rate. However, random forest learning method is just one of the choices, no one model will always prevail others, what we do is just finding the right one.
+
+****
+##  5 Appendix
+
+```{r, echo=FALSE}
+summary(training[, 1:30])
+```
+
+**Figure 1.0: The variables summary of training data set. (Only displaying the first 30 variables)**
+
+```{r, echo=FALSE}
+summary(subTrain)
+```
+
+**Figure 2.0: The variables summary of subTrain data set.**
+
+```{r, echo=FALSE}
+rfMod$finalModel
+```
+
+**Figure 3.0: Final random forest model summary.**
+
+```{r, echo=FALSE}
+plot(rfMod$finalModel, main = "Final Model using Random Forest")
+```
+
+**Figure 4.0: Plotting the final model of random forest.**
+
+****
+##  6 Reference
+
+[1]: Velloso, E.; Bulling, A.; Gellersen, H.; Ugulino, W.; Fuks, H., http://groupware.les.inf.puc-rio.br/har. 
+Qualitative Activity Recognition of Weight Lifting Exercise. Proceedings of 4th International Conference in 
+Cooperation with SIGCHI (Augmented Human '13). Stuttgart, Germany: ACM SIGCHI, 2013.  
+
+[2]: Mark A. Hall, Correlation-based Feature Selection for Machine Learning
